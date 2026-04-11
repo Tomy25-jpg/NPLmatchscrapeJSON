@@ -6,7 +6,6 @@ from curl_cffi import requests
 from scipy.stats import poisson
 import numpy as np
 
-# --- Keep your calculate_xp and get_match_data functions exactly as they are ---
 def calculate_xp(home_val, away_val):
     if home_val == 0 and away_val == 0: return 1.0, 1.0
     home_probs = [poisson.pmf(i, home_val) for i in range(11)]
@@ -52,7 +51,8 @@ def get_match_data(match_id):
         xp_rxg = calculate_xp(s["H-RG"], s["A-RG"])
         xp_rgot = calculate_xp(s["H-RGOT"], s["A-RGOT"])
 
-        return {
+        # FULL FORMAT
+        full_data = {
             "Season": m.get('season', {}).get('name', 'N/A'),
             "Round": m.get('roundInfo', {}).get('round', 'N/A'),
             "Date": time.strftime('%d/%m/%Y', time.gmtime(m.get('startTimestamp', 0))),
@@ -88,28 +88,46 @@ def get_match_data(match_id):
             "Home Points": h_pts,
             "Away Points": a_pts
         }
+
+        # SUMMARY FORMAT
+        summary_data = {
+            "Home Team": full_data["Home Team"],
+            "Away Team": full_data["Away Team"],
+            "Date": full_data["Date"],
+            "Home Goals": full_data["Home Score"],
+            "Away Goals": full_data["Away Score"]
+        }
+
+        return {"full": full_data, "summary": summary_data}
     except:
         return None
 
 # --- STREAMLIT UI ---
+st.set_page_config(page_title="SofaScore Scraper", layout="wide")
 st.title("⚽ SofaScore Data Scraper")
-st.write("Enter Match IDs separated by commas (e.g., 15368092, 15368050)")
 
-match_input = st.text_input("Match IDs", "15368092")
+match_input = st.text_input("Enter Match IDs (separated by commas)", "15368092")
 
 if st.button("Scrape Data"):
     ids = [i.strip() for i in match_input.split(",")]
-    all_results = []
+    full_list = []
+    summary_list = []
     
     with st.spinner("Fetching data..."):
         for mid in ids:
-            data = get_match_data(mid)
-            if data:
-                all_results.append(data)
+            result = get_match_data(mid)
+            if result:
+                full_list.append(result["full"])
+                summary_list.append(result["summary"])
             time.sleep(random.uniform(1.0, 2.0))
             
-    if all_results:
-        st.subheader("JSON Result")
-        st.code(json.dumps(all_results, indent=4), language="json")
+    if full_list:
+        # Display Summary
+        st.subheader("Match Summaries")
+        st.code(json.dumps(summary_list, indent=4), language="json")
+        
+        # Display Full Data
+        st.subheader("Detailed JSON Data")
+        st.code(json.dumps(full_list, indent=4), language="json")
     else:
         st.error("No data found. Check your Match IDs.")
