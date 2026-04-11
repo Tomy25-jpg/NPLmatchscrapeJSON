@@ -24,129 +24,116 @@ def calculate_xp(home_val, away_val):
 
 def get_match_data(match_id):
     try:
-        # Fetching basic event and shotmap data
+        # 1. Fetch Core Event Data
         meta_res = requests.get(f"https://www.sofascore.com/api/v1/event/{match_id}", impersonate="chrome120")
         if meta_res.status_code != 200: return None
         m = meta_res.json().get('event', {})
         
-        h_score = m.get('homeScore', {}).get('display', 0)
-        a_score = m.get('awayScore', {}).get('display', 0)
-        
-        # Determine points
-        if h_score > a_score: h_pts, a_pts = 3, 0
-        elif a_score > h_score: h_pts, a_pts = 0, 3
-        else: h_pts, a_pts = 1, 1
-
-        shot_res = requests.get(f"https://www.sofascore.com/api/v1/event/{match_id}/shotmap", impersonate="chrome120", headers={"referer": f"https://www.sofascore.com/event/{match_id}"})
-        shots = shot_res.json().get('shotmap', []) if shot_res.status_code == 200 else []
-
-        s = {"H-S": 0, "H-xG": 0.0, "H-xGOT": 0.0, "A-S": 0, "A-xG": 0.0, "A-xGOT": 0.0,
-             "H-RG": 0.0, "H-RGOT": 0.0, "A-RG": 0.0, "A-RGOT": 0.0, "H-SP": 0.0, "H-C": 0.0, "A-SP": 0.0, "A-C": 0.0}
-
-        for shot in shots:
-            side = "H" if shot.get("isHome") else "A"
-            sit = shot.get("situation", "regular")
-            xg, xgot = shot.get("xg", 0.0) or 0.0, shot.get("xgot", 0.0) or 0.0
-            s[f"{side}-S"] += 1
-            s[f"{side}-xG"] += xg
-            s[f"{side}-xGOT"] += xgot
-            if sit == "regular": s[f"{side}-RG"] += xg; s[f"{side}-RGOT"] += xgot
-            elif sit == "set-piece": s[f"{side}-SP"] += xg
-            elif sit == "corner": s[f"{side}-C"] += xg
-
-        xp_txg = calculate_xp(s["H-xG"], s["A-xG"])
-        xp_tgot = calculate_xp(s["H-xGOT"], s["A-xGOT"])
-        
-        # Core data assembly
-        season = m.get('season', {}).get('name', 'N/A')
-        round_val = m.get('roundInfo', {}).get('round', 'N/A')
-        date = time.strftime('%d/%m/%Y', time.gmtime(m.get('startTimestamp', 0)))
-        stadium = m.get('venue', {}).get('name', 'N/A')
-        crowd = m.get('attendance', 'N/A')
-        h_team = m.get('homeTeam', {}).get('name', 'N/A')
-        a_team = m.get('awayTeam', {}).get('name', 'N/A')
-
-        full_data = {
-            "Season": season, "Round": round_val, "Date": date, "Stadium": stadium, "Crowd": crowd,
-            "Home Team": h_team, "Away Team": a_team, "Home Score": h_score, "Away Score": a_score,
-            "H-Shots": s["H-S"], "H-xG (Total)": round(s["H-xG"], 3), "H-xGOT (Total)": round(s["H-xGOT"], 3),
-            "A-Shots": s["A-S"], "A-xG (Total)": round(s["A-xG"], 3), "A-xGOT (Total)": round(s["A-xGOT"], 3),
-            "xP-H (Total xG)": xp_txg[0], "xP-A (Total xG)": xp_txg[1],
-            "Match ID": int(match_id)
-        }
-
-        # --- Player Stats (The 3rd Section Logic) ---
+        # 2. Fetch Shotmap & Lineups
+        shot_res = requests.get(f"https://www.sofascore.com/api/v1/event/{match_id}/shotmap", impersonate="chrome120", headers=HEADERS)
         lineup_res = requests.get(f"https://www.sofascore.com/api/v1/event/{match_id}/lineups", impersonate="chrome120", headers=HEADERS)
         incident_res = requests.get(f"https://www.sofascore.com/api/v1/event/{match_id}/incidents", impersonate="chrome120", headers=HEADERS)
         
+        shots = shot_res.json().get('shotmap', []) if shot_res.status_code == 200 else []
         lineups = lineup_res.json() if lineup_res.status_code == 200 else {}
-        incidents = incident_res.json() if incident_res.status_code == 200 else {}
-        
-        # Format Meta Key: SeasonRoundDateStadiumCrowdHome TeamAway TeamHome ScoreAway Score
-        meta_key = f"{season}{round_val}{date}{stadium.replace(' ', '')}{crowd}{h_team}{a_team}{h_score}{a_score}"
-        player_stats = []
+        incidents = incident_res.json().get('incidents', []) if incident_res.status_code == 200 else []
 
+        # --- SECTION 1 & 2 DATA PREP ---
+        h_score = m.get('homeScore', {}).get('display', 0)
+        a_score = m.get('awayScore', {}).get('display', 0)
+        h_team = m.get('homeTeam', {}).get('name', 'N/A')
+        a_team = m.get('awayTeam', {}).get('name', 'N/A')
+
+        # --- SECTION 3: PLAYER PERFORMANCE (FIXED IDs & FULL METRICS) ---
+        player_stats = []
         for side in ['home', 'away']:
             is_home_side = (side == 'home')
+            team_name = h_team if is_home_side else a_team
             players_list = lineups.get(side, {}).get('players', [])
+            
             for p in players_list:
                 stats_block = p.get('statistics')
                 if not stats_block or stats_block.get('minutesPlayed', 0) == 0: continue
                 
                 p_id = p.get('player', {}).get('id')
-                xg_p, xg_m, g_p, g_m = 0.0, 0.0, 0, 0
+                p_name = p.get('player', {}).get('name')
                 
-                # Simple shot attribution for player involvement windows (using basic logic)
+                # Metrics Accumulators
+                xg_p, xg_m, xgot_p, xgot_m, g_p, g_m = 0.0, 0.0, 0.0, 0.0, 0, 0
+                
+                # Shot involvement (xG and xGOT)
                 for shot in shots:
                     is_shot_home = shot.get('isHome')
-                    val = shot.get('xg', 0.0) or 0.0
-                    if is_shot_home == is_home_side: xg_p += val
-                    else: xg_m += val
+                    val_xg = shot.get('xg', 0.0) or 0.0
+                    val_xgot = shot.get('xgot', 0.0) or 0.0
+                    
+                    if is_shot_home == is_home_side:
+                        xg_p += val_xg
+                        xgot_p += val_xgot
+                    else:
+                        xg_m += val_xg
+                        xgot_m += val_xgot
+
+                # Goal involvement
+                for inc in incidents:
+                    if inc.get('incidentType') == 'goal':
+                        is_goal_home = inc.get('isHome')
+                        is_og = inc.get('incidentClass') == 'ownGoal'
+                        # A goal for your side is either your team scoring or opposition OG
+                        if (is_goal_home == is_home_side and not is_og) or (is_goal_home != is_home_side and is_og):
+                            g_p += 1
+                        else:
+                            g_m += 1
 
                 player_stats.append({
-                    "Metadata": meta_key,
-                    "Player": p.get('player', {}).get('name'),
-                    "Team": h_team if is_home_side else a_team,
+                    "Match ID": int(match_id),
+                    "Player ID": p_id,
+                    "Player": p_name,
+                    "Team": team_name,
                     "Mins": stats_block.get('minutesPlayed', 0),
                     "xG_plus": round(xg_p, 3),
                     "xG_minus": round(xg_m, 3),
-                    "xG_diff": round(xg_p - xg_m, 3)
+                    "xG_diff": round(xg_p - xg_m, 3),
+                    "xGOT_plus": round(xgot_p, 3),
+                    "xGOT_minus": round(xgot_m, 3),
+                    "xGOT_diff": round(xgot_p - xgot_m, 3),
+                    "G_plus": g_p,
+                    "G_minus": g_m,
+                    "G_diff": g_p - g_m
                 })
 
-        return {"full": full_data, "summary": {"Home": h_team, "Away": a_team, "Score": f"{h_score}-{a_score}"}, "players": player_stats}
+        return {
+            "summary": {"Match": f"{h_team} vs {a_team}", "Result": f"{h_score}-{a_score}", "Date": time.strftime('%d/%m/%Y', time.gmtime(m.get('startTimestamp', 0)))},
+            "players": player_stats
+        }
     except Exception as e:
         return None
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="SofaScore Scraper Pro", layout="wide")
-st.title("⚽ SofaScore Comprehensive Scraper")
+st.set_page_config(page_title="SofaScore Analytics", layout="wide")
+st.title("⚽ SofaScore Player Performance Scraper")
 
-match_input = st.text_input("Enter Match IDs (separated by commas)", "15368092")
+match_input = st.text_input("Enter Match IDs", "15368116")
 
-if st.button("Scrape Everything"):
+if st.button("Run Scraper"):
     ids = [i.strip() for i in match_input.split(",")]
-    full_list, summary_list, player_list = [], [], []
+    all_summaries, all_players = [], []
     
-    with st.spinner("Processing match data and player analytics..."):
+    with st.spinner("Crunching match stats..."):
         for mid in ids:
             result = get_match_data(mid)
             if result:
-                full_list.append(result["full"])
-                summary_list.append(result["summary"])
-                player_list.extend(result["players"])
+                all_summaries.append(result["summary"])
+                all_players.extend(result["players"])
             time.sleep(random.uniform(1.5, 2.5))
             
-    if full_list:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("1. Match Summaries")
-            st.code(json.dumps(summary_list, indent=4), language="json")
-        with col2:
-            st.subheader("2. Detailed Match JSON")
-            st.code(json.dumps(full_list, indent=4), language="json")
-            
+    if all_players:
+        st.subheader("Match Summaries")
+        st.json(all_summaries)
+        
         st.divider()
-        st.subheader("3. Player Performance Data (Copy-Pastable)")
-        st.code(json.dumps(player_list, indent=4), language="json")
+        st.subheader("Performance Data (xG, xGOT, Goals +/-)")
+        st.info("Copy the JSON below for your database.")
+        st.code(json.dumps(all_players, indent=4), language="json")
     else:
-        st.error("No data found. Check your Match IDs or connection.")
+        st.error("Could not retrieve data. Please verify Match IDs.")
