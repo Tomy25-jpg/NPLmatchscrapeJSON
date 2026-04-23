@@ -8,9 +8,9 @@ import numpy as np
 
 # --- BOT PROTECTION CONFIG ---
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 ]
 
 def calculate_xp(home_val, away_val):
@@ -24,25 +24,35 @@ def calculate_xp(home_val, away_val):
     return round((p_home_win * 3) + (p_draw * 1), 3), round((p_away_win * 3) + (p_draw * 1), 3)
 
 def get_complete_match_data(match_id):
+    # Enhanced browser headers
+    ua = random.choice(USER_AGENTS)
     headers = {
-        "User-Agent": random.choice(USER_AGENTS),
+        "User-Agent": ua,
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
         "Referer": f"https://www.sofascore.com/event/{match_id}",
-        "Accept": "application/json"
+        "Origin": "https://www.sofascore.com",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
     }
     
     try:
         with requests.Session() as s:
             # Step 1: Core Event Data
-            meta_res = s.get(f"https://www.sofascore.com/api/v1/event/{match_id}", impersonate="chrome120", headers=headers)
-            if meta_res.status_code != 200: return None
+            meta_res = s.get(f"https://www.sofascore.com/api/v1/event/{match_id}", impersonate="chrome124", headers=headers, timeout=15)
+            
+            if meta_res.status_code != 200:
+                st.warning(f"Match {match_id} failed with Status: {meta_res.status_code}")
+                return None
+                
             m = meta_res.json().get('event', {})
+            time.sleep(random.uniform(1.2, 2.0)) # Increased pacing for stability
             
-            time.sleep(random.uniform(0.6, 1.2)) # Anti-bot pacing
-            
-            # Step 2: Statistics & Shotmap & Lineups
-            shot_res = s.get(f"https://www.sofascore.com/api/v1/event/{match_id}/shotmap", impersonate="chrome120", headers=headers)
-            lineup_res = s.get(f"https://www.sofascore.com/api/v1/event/{match_id}/lineups", impersonate="chrome120", headers=headers)
-            incident_res = s.get(f"https://www.sofascore.com/api/v1/event/{match_id}/incidents", impersonate="chrome120", headers=headers)
+            # Step 2: Stats & Shotmap & Lineups
+            shot_res = s.get(f"https://www.sofascore.com/api/v1/event/{match_id}/shotmap", impersonate="chrome124", headers=headers)
+            lineup_res = s.get(f"https://www.sofascore.com/api/v1/event/{match_id}/lineups", impersonate="chrome124", headers=headers)
+            incident_res = s.get(f"https://www.sofascore.com/api/v1/event/{match_id}/incidents", impersonate="chrome124", headers=headers)
             
             shots = shot_res.json().get('shotmap', []) if shot_res.status_code == 200 else []
             lineups = lineup_res.json() if lineup_res.status_code == 200 else {}
@@ -73,11 +83,13 @@ def get_complete_match_data(match_id):
         xp_reg_xg = calculate_xp(ms["H-RG"], ms["A-RG"])
         xp_reg_xgot = calculate_xp(ms["H-RGOT"], ms["A-RGOT"])
 
+        match_date = time.strftime('%d/%m/%Y', time.gmtime(m.get('startTimestamp', 0)))
+
         # 1. H2H JSON FORMAT
         h2h_data = {
             "Home Team": h_team,
             "Away Team": a_team,
-            "Date": time.strftime('%d/%m/%Y', time.gmtime(m.get('startTimestamp', 0))),
+            "Date": match_date,
             "Home Goals": h_score,
             "Away Goals": a_score
         }
@@ -86,7 +98,7 @@ def get_complete_match_data(match_id):
         match_data = {
             "Season": m.get('season', {}).get('name', 'N/A'),
             "Round": m.get('roundInfo', {}).get('round', 'N/A'),
-            "Date": time.strftime('%d/%m/%Y', time.gmtime(m.get('startTimestamp', 0))),
+            "Date": match_date,
             "Stadium": m.get('venue', {}).get('name', 'N/A'),
             "Crowd": m.get('attendance', 'N/A'),
             "Home Team": h_team,
@@ -169,7 +181,8 @@ def get_complete_match_data(match_id):
                 })
 
         return {"h2h": h2h_data, "match": match_data, "players": player_performance}
-    except Exception:
+    except Exception as e:
+        st.error(f"Error processing match {match_id}: {str(e)}")
         return None
 
 # --- STREAMLIT UI ---
@@ -190,8 +203,8 @@ if st.button("Extract All Data"):
             match_list.append(result["match"])
             player_list.extend(result["players"])
         
-        # Random sleep to avoid detection
-        time.sleep(random.uniform(2.5, 4.5))
+        # Increased random sleep between different match IDs
+        time.sleep(random.uniform(3.5, 6.0))
         progress_bar.progress((index + 1) / len(ids))
             
     if h2h_list:
@@ -206,4 +219,4 @@ if st.button("Extract All Data"):
         st.subheader("3. Player Performance JSON")
         st.code(json.dumps(player_list, indent=4), language="json")
     else:
-        st.error("No data could be retrieved. Check IDs or your connection.")
+        st.error("No data could be retrieved. If running on Streamlit Cloud, you may need a residential proxy.")
